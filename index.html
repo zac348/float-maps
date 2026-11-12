@@ -146,7 +146,7 @@
             <label class="field"><span>Battery at start %</span><input type="number" id="battStart" min="0" max="100" placeholder="e.g. 96"></label>
             <label class="field"><span>At end %</span><input type="number" id="battEnd" min="0" max="100" placeholder="e.g. 61"></label>
           </div>
-          <p class="note" style="margin-top:0">This file has no battery level. Enter both and the curve is estimated from amp-hours used.</p>
+          <p class="note" style="margin-top:0">Nosedive's CSV export doesn't include battery level. Enter both numbers to add an estimated battery chart, shaped by the energy used.</p>
         </div>
       </section>
 
@@ -274,7 +274,9 @@ function parseRide(text, fileName) {
     if (dt <= 0 || dt > 5) continue;
     if (rows[i].speed > 0.8) moving += dt;
     if (has.power) wh += rows[i].power * dt / 3600;
+    rows[i].e = wh;
   }
+  rows[0].e = 0; for (let i = 1; i < rows.length; i++) if (rows[i].e === undefined) rows[i].e = rows[i - 1].e;
   let climb = 0;
   if (has.alt) { let ref = rows[0].alt; for (const r of rows) { if (r.alt - ref >= 3) { climb += r.alt - ref; ref = r.alt; } else if (ref - r.alt >= 3) ref = r.alt; } }
 
@@ -387,11 +389,14 @@ async function basemap(center, zoom) {
 function batterySeries() {
   if (ride.has.battery) return { vals: resample(ride.rows, r => r.battery), est: false };
   const a = parseFloat(state.battStart), b = parseFloat(state.battEnd);
-  if (!(a >= 0 && a <= 100 && b >= 0 && b <= 100) || !ride.has.ah) return null;
-  const net = r => r.ah - (ride.has.ahc ? r.ahc : 0);
-  const n0 = net(ride.rows[0]), total = net(ride.rows[ride.rows.length - 1]) - n0;
-  if (!(total > 0)) return null;
-  return { vals: resample(ride.rows, r => a - (a - b) * Math.max(0, Math.min(1, (net(r) - n0) / total))), est: true };
+  if (!(a >= 0 && a <= 100 && b >= 0 && b <= 100)) return null;
+  // Estimate: spread the drop from start % to end % by net energy used while riding (falls back to distance).
+  // Nosedive's Ah counters aren't used: they keep counting through charging after the ride.
+  const last = ride.rows[ride.rows.length - 1];
+  const prog = ride.has.power && last.e > 0 ? r => r.e / last.e
+             : ride.has.dist && last.dist > ride.rows[0].dist ? r => (r.dist - ride.rows[0].dist) / (last.dist - ride.rows[0].dist) : null;
+  if (!prog) return null;
+  return { vals: resample(ride.rows, r => a - (a - b) * Math.max(0, Math.min(1, prog(r)))), est: true };
 }
 function available() {
   const h = ride.has;
@@ -635,7 +640,7 @@ function syncUI() {
     if (!av[k] && !noBattButEst) missing.push(METRICS[k].label.toLowerCase());
     $('chartChips').append(chip(METRICS[k].label, state.charts[k], metricColor(k), () => { state.charts[k] = !state.charts[k]; update(); }, !av[k]));
   }
-  $('battEst').classList.toggle('hidden', ride.has.battery || !ride.has.ah);
+  $('battEst').classList.toggle('hidden', ride.has.battery);
   $('missingNote').textContent = missing.length ? `Not recorded in this file: ${missing.join(', ')}.` : '';
   $('privLabel').textContent = state.privacy ? `Hide first & last ${imp() ? Math.round(state.privacy * M_FT / 10) * 10 + ' ft' : state.privacy + ' m'} of route` : 'Hide start & end of route (off)';
 }
