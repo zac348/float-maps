@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c0d0f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Float Maps">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<title>Float Maps</title>
+<link rel="stylesheet" href="vendor/maplibre-gl.css">
+<script src="vendor/maplibre-gl.js"></script>
+<style>
+  :root {
+    --bg: #0c0d0f; --panel: #141518; --line: #26282d; --ink: #f0efec;
+    --ink2: #a9a8a1; --ink3: #6f6e69; --accent: #3987e5;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .app { display: grid; grid-template-columns: minmax(0, 1fr) 340px; height: 100vh; }
+  .stage { display: flex; align-items: center; justify-content: center; padding: 28px; min-width: 0; min-height: 0; position: relative; }
+  .frame { position: relative; width: min(100%, calc(100vh - 56px)); aspect-ratio: 1; border-radius: 14px; overflow: hidden;
+    background: #111214; box-shadow: 0 24px 80px rgba(0,0,0,.55), 0 0 0 1px var(--line); }
+  canvas { width: 100%; height: 100%; display: block; }
+  .drop { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center;
+    text-align: center; padding: 32px; cursor: pointer; border: 1.5px dashed #33363c; border-radius: 14px; margin: 14px; transition: .15s; }
+  .drop:hover, .dragging .drop { border-color: var(--accent); background: rgba(57,135,229,.06); }
+  .drop h1 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: -.01em; }
+  .drop p { margin: 0; color: var(--ink2); max-width: 34ch; }
+  .drop .hint { color: var(--ink3); font-size: 12px; }
+  .hidden { display: none !important; }
+  #map { position: fixed; left: -3000px; top: 0; width: 1080px; height: 1080px; pointer-events: none; }
+
+  aside { background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; padding: 20px 20px 28px; }
+  .brand { font-weight: 650; font-size: 15px; letter-spacing: -.01em; margin-bottom: 2px; }
+  .file { color: var(--ink3); font-size: 12px; margin-bottom: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  section { padding: 14px 0; border-top: 1px solid var(--line); }
+  h2 { margin: 0 0 10px; font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--ink3); }
+  label.field { display: block; margin-bottom: 8px; }
+  label.field span { display: block; font-size: 12px; color: var(--ink2); margin-bottom: 4px; }
+  input[type=text], input[type=number] { width: 100%; background: #0e0f11; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; font: inherit; outline: none; }
+  input:focus { border-color: var(--accent); }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > * { flex: 1; }
+  .seg { display: flex; background: #0e0f11; border: 1px solid var(--line); border-radius: 8px; padding: 2px; margin-bottom: 8px; }
+  .seg button { flex: 1; background: none; border: 0; color: var(--ink2); font: inherit; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+  .seg button.on { background: #24262b; color: var(--ink); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; background: #0e0f11; border: 1px solid var(--line); color: var(--ink3);
+    border-radius: 999px; padding: 5px 11px 5px 9px; font: inherit; font-size: 13px; cursor: pointer; user-select: none; }
+  .chip i { width: 8px; height: 8px; border-radius: 50%; background: #3a3c42; }
+  .chip.on { color: var(--ink); border-color: #3a3d44; background: #1b1d21; }
+  .chip.on i { background: var(--c, var(--accent)); }
+  .chip:disabled { opacity: .4; cursor: not-allowed; text-decoration: line-through; }
+  .swatches { display: flex; gap: 8px; }
+  .swatch { width: 100%; height: 26px; border-radius: 7px; border: 2px solid transparent; cursor: pointer; padding: 0; }
+  .swatch.on { border-color: var(--ink); }
+  .note { font-size: 12px; color: var(--ink3); margin: 8px 0 0; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .actions { display: grid; gap: 8px; }
+  button.primary, button.ghost { font: inherit; font-weight: 600; border-radius: 9px; padding: 10px 12px; cursor: pointer; border: 1px solid var(--line); }
+  button.primary { background: var(--ink); color: #0c0d0f; border-color: var(--ink); }
+  button.ghost { background: transparent; color: var(--ink); }
+  button.ghost:hover { background: #1b1d21; }
+  .toast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); background: #24262b; padding: 8px 14px; border-radius: 999px;
+    font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+  @media (max-width: 860px) {
+    html, body { height: auto; }
+    body { overscroll-behavior-y: none; }
+    .app { grid-template-columns: 1fr; height: auto; min-height: 100dvh; }
+    .stage { padding: calc(env(safe-area-inset-top) + 10px) 10px 10px; position: sticky; top: 0; z-index: 2; background: var(--bg); }
+    .frame { width: min(100%, 58dvh); border-radius: 12px; }
+    .stage.empty { position: static; }
+    .stage.empty .frame { width: 100%; }
+    aside { border-left: 0; border-top: 1px solid var(--line); padding: 16px 16px calc(env(safe-area-inset-bottom) + 96px); overflow: visible; }
+    input[type=text], input[type=number] { font-size: 16px; }   /* stops iOS zooming on focus */
+    .chip { padding: 8px 13px 8px 11px; font-size: 14px; }
+    .seg button { padding: 9px 8px; }
+    .swatch { height: 34px; }
+    .bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+      padding: 10px 16px calc(env(safe-area-inset-bottom) + 10px); background: rgba(20,21,24,.92); backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px); border-top: 1px solid var(--line); }
+    .bar #copy { display: none; }
+    .bar.canshare #save { order: 2; background: transparent; color: var(--ink); border-color: var(--line); }
+    .bar.canshare #share { order: 1; background: var(--ink); color: #0c0d0f; border-color: var(--ink); }
+    .bar:not(.canshare) { grid-template-columns: 1fr; }
+    .toast { position: fixed; bottom: calc(env(safe-area-inset-bottom) + 84px); z-index: 4; }
+  }
+</style>
+</head>
+<body>
+<div id="map" aria-hidden="true"></div>
+<div class="app">
+  <div class="stage empty" id="stage">
+    <div class="frame">
+      <canvas id="card" width="2160" height="2160"></canvas>
+      <div class="drop" id="drop">
+        <h1>Drop a Nosedive ride</h1>
+        <p>Export a ride from Nosedive as CSV, then tap here to choose it (or drop the file on this page).</p>
+        <p class="hint">Everything stays on your device. Only map tiles are downloaded.</p>
+      </div>
+    </div>
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <aside>
+    <div class="brand">Float Maps</div>
+    <div class="file" id="fileName">No ride loaded</div>
+    <div class="actions">
+      <button class="ghost" id="pick">Import ride CSV…</button>
+      <input type="file" id="fileInput" accept=".csv,text/csv,text/comma-separated-values,text/plain" class="hidden">
+    </div>
+
+    <div id="controls" class="hidden">
+      <section style="margin-top:14px">
+        <h2>Text</h2>
+        <label class="field"><span>Title</span><input type="text" id="title" maxlength="40"></label>
+        <label class="field"><span>Subtitle</span><input type="text" id="subtitle" maxlength="60"></label>
+      </section>
+
+      <section>
+        <h2>Map</h2>
+        <div class="seg" data-key="units"><button data-v="imperial">Miles · °F</button><button data-v="metric">Km · °C</button></div>
+        <div class="seg" data-key="theme"><button data-v="dark">Dark</button><button data-v="light">Light</button></div>
+        <div class="swatches" id="ramps"></div>
+        <div class="chips" style="margin-top:10px" id="showChips"></div>
+      </section>
+
+      <section>
+        <h2>Charts on the card</h2>
+        <div class="chips" id="chartChips"></div>
+        <p class="note" id="missingNote"></p>
+        <div id="battEst" class="hidden" style="margin-top:10px">
+          <div class="row">
+            <label class="field"><span>Battery at start %</span><input type="number" id="battStart" min="0" max="100" placeholder="e.g. 96"></label>
+            <label class="field"><span>At end %</span><input type="number" id="battEnd" min="0" max="100" placeholder="e.g. 61"></label>
+          </div>
+          <p class="note" style="margin-top:0">This file has no battery level. Enter both and the curve is estimated from amp-hours used.</p>
+        </div>
+      </section>
+
+      <section>
+        <h2>Privacy</h2>
+        <label class="field"><span id="privLabel">Hide start &amp; end of route</span>
+          <input type="range" id="privacy" min="0" max="500" step="25" value="0"></label>
+      </section>
+
+      <section class="actions bar" id="bar">
+        <button class="primary" id="save">Save PNG</button>
+        <button class="ghost" id="copy">Copy image</button>
+        <button class="ghost hidden" id="share">Share…</button>
+      </section>
+    </div>
+  </aside>
+</div>
+
+<script>
+'use strict';
+/* ───────────────────────── constants ───────────────────────── */
+const W = 1080, S = 2;                       // design size, device scale
+const canvas = document.getElementById('card');
+const ctx = canvas.getContext('2d');
+const FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Inter, system-ui, sans-serif';
+const KM_MI = 0.621371, M_FT = 3.28084;
+
+const THEMES = {
+  dark:  { bg: '#0b0c0e', ink: '#f4f3f0', ink2: 'rgba(240,239,236,.66)', ink3: 'rgba(240,239,236,.38)', hair: 'rgba(255,255,255,.10)',
+           scrim: [11,12,14], tiles: 'dark', casing: 'rgba(0,0,0,.55)' },
+  light: { bg: '#f3f2ef', ink: '#0d0d0d', ink2: 'rgba(11,11,11,.66)', ink3: 'rgba(11,11,11,.42)', hair: 'rgba(0,0,0,.12)',
+           scrim: [246,245,242], tiles: 'positron', casing: 'rgba(255,255,255,.75)' },
+};
+// Single-hue speed ramps, slow → fast (dark map: deep → bright).
+const RAMPS = {
+  ice:    ['#1c4f96', '#3987e5', '#9ec5f4', '#eef6ff'],
+  ember:  ['#8a2a12', '#d95926', '#f6a561', '#fff0d6'],
+  mint:   ['#0c6349', '#199e70', '#72dbb3', '#e6fff5'],
+  violet: ['#43349f', '#9085e9', '#c9c3ff', '#f5f3ff'],
+};
+// Chart series colours [dark, light] — fixed per metric so toggling never repaints the others.
+const METRICS = {
+  speed:   { label: 'Speed',           color: null },
+  battery: { label: 'Battery',         color: ['#199e70', '#1baf7a'] },
+  voltage: { label: 'Voltage',         color: ['#199e70', '#1baf7a'] },
+  power:   { label: 'Power',           color: ['#c98500', '#eda100'] },
+  tMotor:  { label: 'Motor temp',      color: ['#d95926', '#eb6834'], short: 'Motor' },
+  tCtrl:   { label: 'Controller temp', color: ['#3987e5', '#2a78d6'], short: 'Controller' },
+  tBatt:   { label: 'Battery temp',    color: ['#d55181', '#e87ba4'], short: 'Battery' },
+  tBms:    { label: 'BMS temp',        color: ['#9085e9', '#6250d6'], short: 'BMS' },
+  alt:     { label: 'Elevation',       color: ['#9085e9', '#6250d6'] },
+  duty:    { label: 'Duty cycle',      color: ['#e66767', '#e34948'] },
+};
+const TEMP_KEYS = ['tMotor', 'tCtrl', 'tBatt', 'tBms'];
+
+const state = Object.assign({
+  title: '', subtitle: '', units: 'imperial', theme: 'dark', ramp: 'ice',
+  show: { stats: true, legend: true, markers: true, labels: false },
+  charts: { speed: true, battery: true, voltage: false, power: true, tMotor: true, tCtrl: true, tBatt: true, tBms: true, alt: false, duty: false },
+  privacy: 0, battStart: '', battEnd: '',
+}, loadPrefs());
+let ride = null;
+
+function loadPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem('floatmaps') || '{}');
+    delete p.title; delete p.subtitle; delete p.battStart; delete p.battEnd;
+    return p;
+  } catch { return {}; }
+}
+function savePrefs() { try { localStorage.setItem('floatmaps', JSON.stringify(state)); } catch {} }
+
+/* ───────────────────────── parsing ───────────────────────── */
+function splitCSV(line) {
+  if (!line.includes('"')) return line.split(',');
+  const out = []; let cur = '', q = false;
+  for (const ch of line) {
+    if (ch === '"') q = !q; else if (ch === ',' && !q) { out.push(cur); cur = ''; } else cur += ch;
+  }
+  out.push(cur); return out;
+}
+const COLS = {
+  t: /^time/, speed: /^speed/, dist: /^distance/, lat: /lat/, lon: /lon/, alt: /^altitude|^elevation/,
+  power: /^(battery )?power/, voltage: /^voltage|^v-?batt/, battery: /batt.*(%|percent|level)|^soc/,
+  tMotor: /^t-mot(?!.*fet)|motor temp/, tCtrl: /t-mosfet|t-fet|controller temp/, tBatt: /^t-batt|battery temp/, tBms: /bms/,
+  duty: /^duty/, ah: /^ah$/, ahc: /^ah charged/,
+};
+function parseRide(text, fileName) {
+  const lines = text.replace(/^﻿/, '').split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 3) throw new Error('That file is empty.');
+  const head = splitCSV(lines[0]).map(h => h.trim());
+  const lower = head.map(h => h.toLowerCase());
+  const idx = {};
+  for (const k in COLS) idx[k] = lower.findIndex(h => COLS[k].test(h));
+  if (idx.t < 0 || idx.speed < 0) throw new Error("This doesn't look like a Nosedive ride export (no Time / Speed columns).");
+  if (idx.lat < 0 || idx.lon < 0) throw new Error('This ride has no GPS columns, so there is no route to draw.');
+  const speedMph = /mph|mi\/h/.test(lower[idx.speed]);
+  const distMi = idx.dist >= 0 && /\(mi/.test(lower[idx.dist]);
+
+  let rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const c = splitCSV(lines[i]); const r = {};
+    for (const k in idx) r[k] = idx[k] >= 0 ? parseFloat(c[idx[k]]) : NaN;
+    if (Number.isFinite(r.t)) rows.push(r);
+  }
+  // Nosedive logs idle/charging rows before the ride with negative timestamps.
+  if (rows.some(r => r.t >= 0)) rows = rows.filter(r => r.t >= 0);
+  if (rows.length < 2) throw new Error('No ride samples found in that file.');
+  for (const r of rows) {
+    if (speedMph) r.speed /= KM_MI;
+    if (distMi) r.dist /= KM_MI;
+    r.speed = Math.abs(r.speed);
+  }
+  const has = {};
+  for (const k of Object.keys(COLS)) has[k] = rows.some(r => Number.isFinite(r[k]) && r[k] !== 0);
+
+  // moving time, energy, climb
+  let moving = 0, wh = 0;
+  for (let i = 1; i < rows.length; i++) {
+    const dt = rows[i].t - rows[i - 1].t;
+    if (dt <= 0 || dt > 5) continue;
+    if (rows[i].speed > 0.8) moving += dt;
+    if (has.power) wh += rows[i].power * dt / 3600;
+  }
+  let climb = 0;
+  if (has.alt) { let ref = rows[0].alt; for (const r of rows) { if (r.alt - ref >= 3) { climb += r.alt - ref; ref = r.alt; } else if (ref - r.alt >= 3) ref = r.alt; } }
+
+  // GPS track: one point per GPS fix, speed averaged across the samples at that fix.
+  const pts = [];
+  let acc = 0, n = 0;
+  for (const r of rows) {
+    if (!Number.isFinite(r.lat) || !Number.isFinite(r.lon) || (r.lat === 0 && r.lon === 0)) continue;
+    const last = pts[pts.length - 1];
+    if (last && last.lat === r.lat && last.lon === r.lon) { acc += r.speed; n++; last.v = acc / n; continue; }
+    acc = r.speed; n = 1;
+    pts.push({ lat: r.lat, lon: r.lon, v: r.speed });
+  }
+  if (pts.length < 2) throw new Error('This ride has no usable GPS points.');
+  // light 1-2-1 smoothing to take the jitter out of phone GPS
+  const sm = pts.map((p, i) => (i === 0 || i === pts.length - 1) ? { ...p } : {
+    lat: (pts[i - 1].lat + 2 * p.lat + pts[i + 1].lat) / 4, lon: (pts[i - 1].lon + 2 * p.lon + pts[i + 1].lon) / 4, v: p.v });
+  // smooth speed along the track (13-point mean) so the colour reads as a gradient, not stripes
+  const raw = sm.map(p => p.v);
+  sm.forEach((p, i) => { let a = 0, c = 0; for (let j = Math.max(0, i - 6); j <= Math.min(sm.length - 1, i + 6); j++) { a += raw[j]; c++; } p.v = a / c; });
+  const sorted = sm.map(p => p.v).sort((a, b) => a - b), vLow = Math.floor(sorted[Math.floor(sorted.length * 0.08)] || 0);
+  let d = 0; sm[0].d = 0;
+  for (let i = 1; i < sm.length; i++) { d += haversine(sm[i - 1], sm[i]); sm[i].d = d; }
+
+  let distKm = has.dist ? rows[rows.length - 1].dist - rows[0].dist : d / 1000;
+  if (!(distKm > 0)) distKm = d / 1000;
+  let top = 0, topRow = rows[0];
+  for (const r of rows) if (r.speed > top) { top = r.speed; topRow = r; }
+
+  const m = /(\d{4})-(\d{2})-(\d{2})/.exec(fileName || '');
+  const date = m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+  return {
+    fileName, rows, has, pts: sm, vLow, trackLen: d, date,
+    stats: { distKm, moving, elapsed: rows[rows.length - 1].t - rows[0].t, top, avg: moving > 0 ? distKm / (moving / 3600) : 0, wh, climb },
+    topAt: { lat: topRow.lat, lon: topRow.lon },
+  };
+}
+function haversine(a, b) {
+  const R = 6371000, r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function resample(rows, get, n = 220) {
+  const t0 = rows[0].t, span = rows[rows.length - 1].t - t0 || 1;
+  const sum = new Float64Array(n), cnt = new Uint32Array(n);
+  for (const r of rows) {
+    const v = get(r); if (!Number.isFinite(v)) continue;
+    const b = Math.min(n - 1, Math.floor((r.t - t0) / span * n)); sum[b] += v; cnt[b]++;
+  }
+  const out = []; let prev = NaN;
+  for (let i = 0; i < n; i++) { if (cnt[i]) prev = sum[i] / cnt[i]; out.push(prev); }
+  const first = out.find(Number.isFinite);
+  return out.map(v => Number.isFinite(v) ? v : first);
+}
+
+/* ───────────────────────── units & formatting ───────────────────────── */
+const imp = () => state.units === 'imperial';
+const U = {
+  dist: km => imp() ? km * KM_MI : km, distU: () => imp() ? 'mi' : 'km',
+  speed: k => imp() ? k * KM_MI : k,   speedU: () => imp() ? 'mph' : 'km/h',
+  temp: c => imp() ? c * 9 / 5 + 32 : c, tempU: () => imp() ? '°F' : '°C',
+  alt: m => imp() ? m * M_FT : m,      altU: () => imp() ? 'ft' : 'm',
+};
+function clock(s) {
+  s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), ss = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+}
+const f1 = v => v.toFixed(1), f0 = v => Math.round(v).toLocaleString('en-US');
+
+/* ───────────────────────── colour ───────────────────────── */
+const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+function rampStops() { const s = RAMPS[state.ramp] || RAMPS.ice; return state.theme === 'dark' ? s : [s[2], s[1], s[0]]; }
+function rampColor(t) {
+  const st = rampStops(); t = Math.max(0, Math.min(1, t)) * (st.length - 1);
+  const i = Math.min(st.length - 2, Math.floor(t)), f = t - i, a = hex(st[i]), b = hex(st[i + 1]);
+  return `rgb(${a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(',')})`;
+}
+const accent = () => { const s = RAMPS[state.ramp] || RAMPS.ice; return s[1]; };
+const metricColor = k => METRICS[k].color ? METRICS[k].color[state.theme === 'dark' ? 0 : 1] : accent();
+
+/* ───────────────────────── basemap (MapLibre + OpenFreeMap, no API key) ───────────────────────── */
+const mercX = (lon, z) => (lon + 180) / 360 * 256 * 2 ** z;
+const mercY = (lat, z) => { const s = Math.sin(lat * Math.PI / 180); return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * 256 * 2 ** z; };
+const unLon = x => x / 256 * 360 - 180;
+const unLat = y => Math.atan(Math.sinh(Math.PI * (1 - 2 * y / 256))) * 180 / Math.PI;
+let map = null, mapStyle = '', mapLabels = null;
+const idle = ms => new Promise(res => { const h = setTimeout(() => res(false), ms); map.once('idle', () => { clearTimeout(h); res(true); }); });
+async function basemap(center, zoom) {
+  if (!window.maplibregl) return null;
+  const T = THEMES[state.theme], url = `https://tiles.openfreemap.org/styles/${T.tiles}`;
+  try {
+    if (!map) {
+      map = new maplibregl.Map({ container: 'map', style: url, center, zoom, interactive: false, attributionControl: false,
+        preserveDrawingBuffer: true, pixelRatio: S, fadeDuration: 0 });
+      mapStyle = url; mapLabels = null;
+      map.on('error', () => {});
+      await idle(12000);
+    } else if (mapStyle !== url) { mapStyle = url; mapLabels = null; map.setStyle(url); map.jumpTo({ center, zoom }); await idle(12000); }
+    if (mapLabels !== state.show.labels) {
+      mapLabels = state.show.labels;
+      for (const l of map.getStyle().layers) if (l.type === 'symbol') map.setLayoutProperty(l.id, 'visibility', mapLabels ? 'visible' : 'none');
+    }
+    map.jumpTo({ center, zoom }); map.triggerRepaint();
+    const ok = await idle(12000);
+    return ok ? map.getCanvas() : null;
+  } catch (e) { console.warn('basemap failed', e); return null; }
+}
+
+/* ───────────────────────── chart cells ───────────────────────── */
+function batterySeries() {
+  if (ride.has.battery) return { vals: resample(ride.rows, r => r.battery), est: false };
+  const a = parseFloat(state.battStart), b = parseFloat(state.battEnd);
+  if (!(a >= 0 && a <= 100 && b >= 0 && b <= 100) || !ride.has.ah) return null;
+  const net = r => r.ah - (ride.has.ahc ? r.ahc : 0);
+  const n0 = net(ride.rows[0]), total = net(ride.rows[ride.rows.length - 1]) - n0;
+  if (!(total > 0)) return null;
+  return { vals: resample(ride.rows, r => a - (a - b) * Math.max(0, Math.min(1, (net(r) - n0) / total))), est: true };
+}
+function available() {
+  const h = ride.has;
+  return { speed: true, battery: !!batterySeries(), voltage: h.voltage, power: h.power, tMotor: h.tMotor, tCtrl: h.tCtrl,
+           tBatt: h.tBatt, tBms: h.tBms, alt: h.alt, duty: h.duty };
+}
+function buildCells() {
+  const av = available(), on = k => state.charts[k] && av[k], cells = [], rows = ride.rows, st = ride.stats;
+  if (on('speed')) cells.push({ label: 'Speed', head: `${f1(U.speed(st.top))} ${U.speedU()} max`, zero: true,
+    series: [{ color: metricColor('speed'), vals: resample(rows, r => U.speed(r.speed)) }] });
+  if (on('battery')) { const b = batterySeries(), v = b.vals;
+    cells.push({ label: 'Battery', head: `${b.est ? 'est. ' : ''}${f0(v[0])} → ${f0(v[v.length - 1])}%`,
+      series: [{ color: metricColor('battery'), vals: v }] }); }
+  if (on('voltage')) { const v = resample(rows, r => r.voltage || NaN);
+    cells.push({ label: 'Voltage', head: `${f1(v[0])} → ${f1(v[v.length - 1])} V`, series: [{ color: metricColor('voltage'), vals: v }] }); }
+  if (on('power')) { const v = resample(rows, r => r.power);
+    cells.push({ label: 'Power', head: `${f0(Math.max(...rows.map(r => r.power || 0)))} W peak`, zero: true, series: [{ color: metricColor('power'), vals: v }] }); }
+  const temps = TEMP_KEYS.filter(on);
+  if (temps.length) {
+    const series = temps.map(k => ({ color: metricColor(k), name: METRICS[k].short,
+      vals: resample(rows, r => U.temp(r[k])), max: U.temp(Math.max(...rows.map(r => Number.isFinite(r[k]) ? r[k] : -Infinity))) }));
+    cells.push(temps.length === 1
+      ? { label: METRICS[temps[0]].label, head: `${f0(series[0].max)}${U.tempU()} max`, series }
+      : { label: `Temp ${U.tempU()}`, legend: true, span: temps.length > 2 ? 3 : 2, series });
+  }
+  if (on('alt')) cells.push({ label: 'Elevation', head: `+${f0(U.alt(st.climb))} ${U.altU()}`, series: [{ color: metricColor('alt'), vals: resample(rows, r => U.alt(r.alt)) }] });
+  if (on('duty')) cells.push({ label: 'Duty cycle', head: `${f0(Math.max(...rows.map(r => r.duty || 0)))}% max`, zero: true, series: [{ color: metricColor('duty'), vals: resample(rows, r => r.duty) }] });
+  return cells;
+}
+function packRows(cells) {
+  const units = cells.reduce((s, c) => s + (c.span || 1), 0);
+  const cols = Math.min(units, 3);
+  const out = []; let cur = [], used = 0;
+  for (const c of cells) { const sp = c.span || 1; if (used + sp > cols && cur.length) { out.push(cur); cur = []; used = 0; } cur.push(c); used += sp; }
+  if (cur.length) out.push(cur);
+  return out;
+}
+
+/* ───────────────────────── drawing helpers ───────────────────────── */
+function txt(s, x, y, { size = 22, weight = 500, color, align = 'left', ls = 0, base = 'alphabetic' } = {}) {
+  ctx.font = `${weight} ${size}px ${FONT}`; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = base;
+  if ('letterSpacing' in ctx) ctx.letterSpacing = ls + 'px';
+  ctx.fillText(s, x, y);
+  const w = ctx.measureText(s).width;
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+  return w;
+}
+function fit(s, maxW, size, weight) {
+  ctx.font = `${weight} ${size}px ${FONT}`;
+  while (size > 18 && ctx.measureText(s).width > maxW) { size -= 2; ctx.font = `${weight} ${size}px ${FONT}`; }
+  return size;
+}
+function scrim(y0, y1, a0, a1) {
+  const T = THEMES[state.theme], g = ctx.createLinearGradient(0, y0, 0, y1), c = T.scrim.join(',');
+  const steps = 8; // eased so the fade has no visible edge
+  for (let i = 0; i <= steps; i++) { const f = i / steps, e = f * f * (3 - 2 * f); g.addColorStop(f, `rgba(${c},${a0 + (a1 - a0) * e})`); }
+  ctx.fillStyle = g; ctx.fillRect(0, Math.min(y0, y1), W, Math.abs(y1 - y0));
+}
+function drawSpark(cell, x, y, w, h) {
+  const T = THEMES[state.theme];
+  let lo = Infinity, hi = -Infinity;
+  for (const s of cell.series) for (const v of s.vals) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  if (cell.zero) lo = Math.min(0, lo);
+  if (hi - lo < 1e-6) { hi += 1; lo -= 1; }
+  const pad = (hi - lo) * 0.08; hi += pad; if (!cell.zero) lo -= pad;
+  const X = i => x + i / (cell.series[0].vals.length - 1) * w, Y = v => y + h - (v - lo) / (hi - lo) * h;
+  ctx.strokeStyle = T.hair; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, y + h); ctx.lineTo(x + w, y + h); ctx.stroke();
+  const single = cell.series.length === 1;
+  for (const s of cell.series) {
+    ctx.beginPath(); s.vals.forEach((v, i) => i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v)));
+    if (single) {
+      ctx.save(); ctx.lineTo(x + w, y + h); ctx.lineTo(x, y + h); ctx.closePath();
+      const g = ctx.createLinearGradient(0, y, 0, y + h), c = hex(s.color).join(',');
+      g.addColorStop(0, `rgba(${c},.34)`); g.addColorStop(1, `rgba(${c},0)`); ctx.fillStyle = g; ctx.fill(); ctx.restore();
+      ctx.beginPath(); s.vals.forEach((v, i) => i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v)));
+    }
+    ctx.strokeStyle = s.color; ctx.lineWidth = 3; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke();
+  }
+}
+function drawCell(cell, x, y, w, h) {
+  const T = THEMES[state.theme];
+  if (cell.legend) {
+    let cx = x + txt(cell.label.toUpperCase(), x, y + 20, { size: 19, weight: 600, color: T.ink3, ls: 1.4 }) + 22;
+    for (const s of cell.series) {
+      ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(cx + 6, y + 13, 6, 0, 7); ctx.fill(); cx += 19;
+      cx += txt(s.name, cx, y + 20, { size: 20, weight: 500, color: T.ink2 }) + 8;
+      cx += txt(`${f0(s.max)}°`, cx, y + 20, { size: 20, weight: 650, color: T.ink }) + 22;
+    }
+  } else {
+    ctx.fillStyle = cell.series[0].color; ctx.beginPath(); ctx.arc(x + 6, y + 13, 6, 0, 7); ctx.fill();
+    const lw = 20 + txt(cell.label.toUpperCase(), x + 20, y + 20, { size: 19, weight: 600, color: T.ink3, ls: 1.4 });
+    ctx.font = `650 21px ${FONT}`;
+    let head = cell.head; if (lw + 14 + ctx.measureText(head).width > w) head = head.replace(/ (max|peak)$/, '');
+    txt(head, x + w, y + 20, { size: 21, weight: 650, color: T.ink, align: 'right' });
+  }
+  drawSpark(cell, x, y + 36, w, h - 36);
+}
+
+/* ───────────────────────── render ───────────────────────── */
+let renderToken = 0;
+function visiblePts() {
+  const p = ride.pts, R = state.privacy;
+  if (!R) return p;
+  const out = p.filter(q => q.d >= R && ride.trackLen - q.d >= R);
+  return out.length >= 2 ? out : p;
+}
+async function render() {
+  if (!ride) return;
+  const token = ++renderToken, T = THEMES[state.theme], st = ride.stats, M = 56;
+
+  // layout: bottom panel = stat row + chart rows
+  const cells = buildCells(), chartRows = packRows(cells);
+  const statH = state.show.stats ? 104 : 0, rowH = 106, rowGap = 22;
+  const chartsH = chartRows.length ? chartRows.length * rowH + (chartRows.length - 1) * rowGap : 0;
+  const panelH = statH + chartsH + (statH && chartsH ? 30 : 0) + (statH || chartsH ? M : 0);
+  const headH = 132;
+
+  // fit route into the free area between header and panel
+  const pts = visiblePts();
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const p of pts) { const x = mercX(p.lon, 0), y = mercY(p.lat, 0); x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  const box = { x: M + 24, y: headH + 10, w: W - 2 * (M + 24), h: W - headH - 10 - panelH - 50 };
+  const z = Math.min(18.5, Math.log2(Math.min(box.w / Math.max(x1 - x0, 1e-9), box.h / Math.max(y1 - y0, 1e-9))));
+  const k = 2 ** z, ox = box.x + box.w / 2 - (x0 + x1) / 2 * k, oy = box.y + box.h / 2 - (y0 + y1) / 2 * k;
+  const px = p => [mercX(p.lon, 0) * k + ox, mercY(p.lat, 0) * k + oy];
+
+  // basemap: MapLibre zoom is for a 512px world, ours is 256px → minus one
+  const img = await basemap([unLon((W / 2 - ox) / k), unLat((W / 2 - oy) / k)], z - 1);
+  if (token !== renderToken) return;
+
+  ctx.setTransform(S, 0, 0, S, 0, 0);
+  ctx.fillStyle = T.bg; ctx.fillRect(0, 0, W, W);
+  ctx.imageSmoothingQuality = 'high';
+  if (img) ctx.drawImage(img, 0, 0, W, W);
+  window.__mapOk = !!img;
+
+  scrim(0, headH + 60, 0.82, 0);
+  if (panelH) { scrim(W - panelH - 150, W - panelH + 10, 0, 0.9); ctx.fillStyle = `rgba(${T.scrim.join(',')},.9)`; ctx.fillRect(0, W - panelH + 10, W, panelH); }
+
+  // route: casing → glow → speed-coloured segments
+  const P = pts.map(px), vmax = Math.max(st.top, 1), vmin = ride.vLow;
+  const tOf = v => (v - vmin) / Math.max(vmax - vmin, 0.1);
+  const trace = () => { ctx.beginPath(); P.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); };
+  ctx.lineJoin = ctx.lineCap = 'round';
+  trace(); ctx.strokeStyle = T.casing; ctx.lineWidth = 15; ctx.stroke();
+  if (state.theme === 'dark') { ctx.save(); ctx.shadowColor = accent(); ctx.shadowBlur = 26 * S; ctx.globalAlpha = 0.55; trace(); ctx.strokeStyle = accent(); ctx.lineWidth = 6; ctx.stroke(); ctx.restore(); }
+  ctx.lineWidth = 7;
+  for (let i = 1; i < P.length; i++) {
+    ctx.strokeStyle = rampColor(tOf((pts[i - 1].v + pts[i].v) / 2));
+    ctx.beginPath(); ctx.moveTo(P[i - 1][0], P[i - 1][1]); ctx.lineTo(P[i][0], P[i][1]); ctx.stroke();
+  }
+
+  if (state.show.markers) {
+    const dot = (q, fill) => { ctx.beginPath(); ctx.arc(q[0], q[1], 10, 0, 7); ctx.fillStyle = fill ? T.ink : T.bg; ctx.fill(); ctx.lineWidth = 4.5; ctx.strokeStyle = T.ink; ctx.stroke(); };
+    dot(P[0], false); dot(P[P.length - 1], true);
+    // top-speed callout, snapped to the nearest visible route point
+    let best = 0, bd = Infinity;
+    pts.forEach((p, i) => { const d = (p.lat - ride.topAt.lat) ** 2 + (p.lon - ride.topAt.lon) ** 2; if (d < bd) { bd = d; best = i; } });
+    const q = P[best], label = `${f1(U.speed(st.top))} ${U.speedU()}`;
+    ctx.font = `650 21px ${FONT}`; const tw = ctx.measureText(label).width, bw = tw + 26, bh = 36;
+    const right = q[0] + 18 + bw < W - M, bx = right ? q[0] + 18 : q[0] - 18 - bw, by = Math.max(headH, q[1] - bh - 10);
+    ctx.fillStyle = T.ink; ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 18); ctx.fill();
+    txt(label, bx + 13, by + bh / 2 + 1, { size: 21, weight: 650, color: T.bg, base: 'middle' });
+    ctx.beginPath(); ctx.arc(q[0], q[1], 6, 0, 7); ctx.fillStyle = T.ink; ctx.fill();
+  }
+
+  // header
+  const legendW = state.show.legend ? 250 : 0;
+  const title = state.title || 'Onewheel ride';
+  txt(title, M, M + 44, { size: fit(title, W - 2 * M - legendW - 20, 54, 700), weight: 700, color: T.ink, ls: -0.8 });
+  if (state.subtitle) txt(state.subtitle.toUpperCase(), M + 2, M + 82, { size: 21, weight: 600, color: T.ink2, ls: 2.2 });
+  if (state.show.legend) {
+    const lw = 210, lx = W - M - lw, ly = M + 30;
+    txt('SPEED', lx, ly - 12, { size: 19, weight: 600, color: T.ink3, ls: 1.4 });
+    txt(U.speedU().toUpperCase(), lx + lw, ly - 12, { size: 19, weight: 600, color: T.ink3, ls: 1.4, align: 'right' });
+    const g = ctx.createLinearGradient(lx, 0, lx + lw, 0), stops = rampStops();
+    stops.forEach((c, i) => g.addColorStop(i / (stops.length - 1), c));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.roundRect(lx, ly, lw, 8, 4); ctx.fill();
+    txt(f0(U.speed(ride.vLow)), lx, ly + 34, { size: 20, weight: 600, color: T.ink2 });
+    txt(f1(U.speed(st.top)), lx + lw, ly + 34, { size: 20, weight: 600, color: T.ink2, align: 'right' });
+  }
+
+  // stats row
+  let y = W - panelH + 10;
+  if (statH) {
+    const items = [
+      [f1(U.dist(st.distKm)), U.distU(), 'Distance'],
+      [clock(st.moving), '', 'Ride time'],
+      [f1(U.speed(st.top)), U.speedU(), 'Top speed'],
+      [f1(U.speed(st.avg)), U.speedU(), 'Avg speed'],
+    ];
+    if (ride.has.power && st.wh > 0) items.push([f0(st.wh / U.dist(st.distKm)), `Wh/${U.distU()}`, 'Efficiency']);
+    const cw = (W - 2 * M) / items.length;
+    items.forEach(([v, u, l], i) => {
+      const x = M + i * cw;
+      const w = txt(v, x, y + 50, { size: 50, weight: 700, color: T.ink, ls: -1 });
+      if (u) txt(u, x + w + 7, y + 50, { size: 21, weight: 600, color: T.ink2 });
+      txt(l.toUpperCase(), x + 1, y + 84, { size: 18, weight: 600, color: T.ink3, ls: 1.4 });
+    });
+    y += statH;
+    if (chartsH) { ctx.fillStyle = T.hair; ctx.fillRect(M, y + 2, W - 2 * M, 1.5); y += 30; }
+  }
+  // chart rows
+  for (const row of chartRows) {
+    const gap = 40, units = row.reduce((s, c) => s + (c.span || 1), 0), uw = (W - 2 * M - gap * (units - 1)) / units;
+    let x = M;
+    for (const c of row) { const sp = c.span || 1, w = uw * sp + gap * (sp - 1); drawCell(c, x, y, w, rowH); x += w + gap; }
+    y += rowH + rowGap;
+  }
+  // attribution (required by the map data licence)
+  ctx.save(); ctx.translate(W - 14, W - panelH - 14); ctx.rotate(-Math.PI / 2);
+  txt('© OpenStreetMap · OpenMapTiles · OpenFreeMap', 0, 0, { size: 13, weight: 500, color: T.ink3 }); ctx.restore();
+  window.__rendered = token;
+}
+
+/* ───────────────────────── UI ───────────────────────── */
+const $ = id => document.getElementById(id);
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('show'), 2600); }
+function update() { savePrefs(); syncUI(); render(); }
+
+function syncUI() {
+  document.querySelectorAll('.seg').forEach(seg => seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', state[seg.dataset.key] === b.dataset.v)));
+  $('ramps').innerHTML = '';
+  for (const k in RAMPS) {
+    const b = document.createElement('button'); b.className = 'swatch' + (state.ramp === k ? ' on' : ''); b.title = k + ' route';
+    b.style.background = `linear-gradient(90deg, ${RAMPS[k].join(',')})`; b.onclick = () => { state.ramp = k; update(); }; $('ramps').append(b);
+  }
+  const chip = (text, on, color, click, disabled) => {
+    const b = document.createElement('button'); b.className = 'chip' + (on && !disabled ? ' on' : ''); b.disabled = !!disabled;
+    b.innerHTML = '<i></i>'; b.append(text); if (color) b.style.setProperty('--c', color); b.setAttribute('aria-pressed', !!on); b.onclick = click; return b;
+  };
+  $('showChips').innerHTML = '';
+  for (const [k, l] of [['stats', 'Stats'], ['legend', 'Speed scale'], ['markers', 'Markers'], ['labels', 'Street names']])
+    $('showChips').append(chip(l, state.show[k], '#f0efec', () => { state.show[k] = !state.show[k]; update(); }));
+  if (!ride) return;
+  const av = available(), missing = [];
+  $('chartChips').innerHTML = '';
+  for (const k in METRICS) {
+    const noBattButEst = k === 'battery' && !ride.has.battery;
+    if (!av[k] && !noBattButEst && (k === 'duty' || k === 'voltage' || k === 'alt')) { continue; }
+    if (!av[k] && !noBattButEst) missing.push(METRICS[k].label.toLowerCase());
+    $('chartChips').append(chip(METRICS[k].label, state.charts[k], metricColor(k), () => { state.charts[k] = !state.charts[k]; update(); }, !av[k]));
+  }
+  $('battEst').classList.toggle('hidden', ride.has.battery || !ride.has.ah);
+  $('missingNote').textContent = missing.length ? `Not recorded in this file: ${missing.join(', ')}.` : '';
+  $('privLabel').textContent = state.privacy ? `Hide first & last ${imp() ? Math.round(state.privacy * M_FT / 10) * 10 + ' ft' : state.privacy + ' m'} of route` : 'Hide start & end of route (off)';
+}
+
+function loadText(text, name) {
+  try { ride = parseRide(text, name); } catch (e) { toast(e.message); return false; }
+  state.title = 'Onewheel ride';
+  state.subtitle = ride.date ? ride.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  state.battStart = state.battEnd = '';
+  $('title').value = state.title; $('subtitle').value = state.subtitle; $('battStart').value = $('battEnd').value = ''; $('privacy').value = state.privacy;
+  $('fileName').textContent = name || 'ride.csv';
+  $('drop').classList.add('hidden'); $('controls').classList.remove('hidden'); $('stage').classList.remove('empty');
+  update(); return true;
+}
+window.__loadText = loadText;
+function readFile(f) { if (!f) return; const r = new FileReader(); r.onload = () => loadText(r.result, f.name); r.readAsText(f); }
+
+$('pick').onclick = $('drop').onclick = () => $('fileInput').click();
+$('fileInput').onchange = e => { readFile(e.target.files[0]); e.target.value = ''; };
+addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('dragging'); });
+addEventListener('dragleave', () => document.body.classList.remove('dragging'));
+addEventListener('drop', e => { e.preventDefault(); document.body.classList.remove('dragging'); readFile(e.dataTransfer.files[0]); });
+document.querySelectorAll('.seg button').forEach(b => b.onclick = () => { state[b.parentElement.dataset.key] = b.dataset.v; update(); });
+for (const id of ['title', 'subtitle', 'battStart', 'battEnd']) $(id).oninput = e => { state[id] = e.target.value; update(); };
+$('privacy').oninput = e => { state.privacy = +e.target.value; update(); };
+
+const pngBlob = () => new Promise(res => canvas.toBlob(res, 'image/png'));
+const outName = () => `onewheel-${ride && ride.date ? ride.date.toISOString().slice(0, 10) : 'ride'}.png`;
+$('save').onclick = async () => {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(await pngBlob()); a.download = outName(); a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000); toast('Saved ' + outName());
+};
+$('copy').onclick = async () => {
+  try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob() })]); toast('Image copied'); }
+  catch { toast("Couldn't copy here — use Save PNG"); }
+};
+if (navigator.canShare && navigator.canShare({ files: [new File([''], 'a.png', { type: 'image/png' })] })) {
+  $('share').classList.remove('hidden'); $('bar').classList.add('canshare');
+  $('share').onclick = async () => { try { await navigator.share({ files: [new File([await pngBlob()], outName(), { type: 'image/png' })] }); } catch {} };
+}
+syncUI();
+if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
