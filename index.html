@@ -107,7 +107,7 @@
       <canvas id="card" width="2160" height="2160"></canvas>
       <div class="drop" id="drop">
         <h1>Drop a Nosedive ride</h1>
-        <p>Export a ride from Nosedive as CSV, then tap here to choose it (or drop the file on this page).</p>
+        <p>Export a ride from Nosedive, then tap here and choose its JSON file. Pick the CSV as well to add battery temperature.</p>
         <p class="hint">Everything stays on your device. Only map tiles are downloaded.</p>
       </div>
     </div>
@@ -118,8 +118,8 @@
     <div class="brand">Float Maps</div>
     <div class="file" id="fileName">No ride loaded</div>
     <div class="actions">
-      <button class="ghost" id="pick">Import ride CSV…</button>
-      <input type="file" id="fileInput" accept=".csv,text/csv,text/comma-separated-values,text/plain" class="hidden">
+      <button class="ghost" id="pick">Import ride…</button>
+      <input type="file" id="fileInput" accept=".csv,.json,text/csv,text/comma-separated-values,application/json,text/plain" multiple class="hidden">
     </div>
 
     <div id="controls" class="hidden">
@@ -146,7 +146,7 @@
             <label class="field"><span>Battery at start %</span><input type="number" id="battStart" min="0" max="100" placeholder="e.g. 96"></label>
             <label class="field"><span>At end %</span><input type="number" id="battEnd" min="0" max="100" placeholder="e.g. 61"></label>
           </div>
-          <p class="note" style="margin-top:0">Nosedive's CSV export doesn't include battery level. Enter both numbers to add an estimated battery chart, shaped by the energy used.</p>
+          <p class="note" style="margin-top:0">Nosedive's CSV has no battery level. Import the ride's JSON file for the real curve, or enter both numbers for an estimate.</p>
         </div>
       </section>
 
@@ -234,7 +234,7 @@ const COLS = {
   tMotor: /^t-mot(?!.*fet)|motor temp/, tCtrl: /t-mosfet|t-fet|controller temp/, tBatt: /^t-batt|battery temp/, tBms: /bms/,
   duty: /^duty/, ah: /^ah$/, ahc: /^ah charged/,
 };
-function parseRide(text, fileName) {
+function csvRows(text) {
   const lines = text.replace(/^﻿/, '').split(/\r?\n/).filter(l => l.trim());
   if (lines.length < 3) throw new Error('That file is empty.');
   const head = splitCSV(lines[0]).map(h => h.trim());
@@ -242,7 +242,6 @@ function parseRide(text, fileName) {
   const idx = {};
   for (const k in COLS) idx[k] = lower.findIndex(h => COLS[k].test(h));
   if (idx.t < 0 || idx.speed < 0) throw new Error("This doesn't look like a Nosedive ride export (no Time / Speed columns).");
-  if (idx.lat < 0 || idx.lon < 0) throw new Error('This ride has no GPS columns, so there is no route to draw.');
   const speedMph = /mph|mi\/h/.test(lower[idx.speed]);
   const distMi = idx.dist >= 0 && /\(mi/.test(lower[idx.dist]);
 
@@ -250,16 +249,56 @@ function parseRide(text, fileName) {
   for (let i = 1; i < lines.length; i++) {
     const c = splitCSV(lines[i]); const r = {};
     for (const k in idx) r[k] = idx[k] >= 0 ? parseFloat(c[idx[k]]) : NaN;
-    if (Number.isFinite(r.t)) rows.push(r);
-  }
-  // Nosedive logs idle/charging rows before the ride with negative timestamps.
-  if (rows.some(r => r.t >= 0)) rows = rows.filter(r => r.t >= 0);
-  if (rows.length < 2) throw new Error('No ride samples found in that file.');
-  for (const r of rows) {
     if (speedMph) r.speed /= KM_MI;
     if (distMi) r.dist /= KM_MI;
-    r.speed = Math.abs(r.speed);
+    rows.push(r);
   }
+  return rows;
+}
+// Nosedive's JSON export: one entry per sample in `logs`, with a matching GPS entry in `locations`.
+// Unlike the CSV it carries the real battery level (but not battery temperature).
+function jsonRows(d) {
+  if (!d || !Array.isArray(d.logs) || !d.logs.length) throw new Error("This JSON file isn't a Nosedive ride export.");
+  const L = d.logs, G = Array.isArray(d.locations) && d.locations.length === L.length ? d.locations : [];
+  const t0 = Number.isFinite(d.startTime) ? d.startTime : L[0].timestamp, num = v => typeof v === 'number' ? v : NaN;
+  const pctScale = L.every(l => !(l.batteryPercent > 1.0001)) ? 100 : 1;
+  const rows = L.map((l, i) => { const g = G[i] || {}; return {
+    t: num(l.timestamp) - t0, speed: num(l.speed), dist: num(l.tripDistance), lat: num(g.latitude), lon: num(g.longitude), alt: num(g.altitude),
+    power: num(l.batteryPower), voltage: num(l.batteryVolts), battery: num(l.batteryPercent) * pctScale, tMotor: num(l.motorTemp),
+    tCtrl: num(l.controllerTemp), tBatt: num(l.batteryTemp), tBms: num(l.bmsTemp), duty: num(l.dutyCycle), ah: num(l.ampHours), ahc: NaN }; });
+  // timestamps are whole seconds: spread the samples that share a second evenly across it
+  for (let i = 0; i < rows.length;) { let j = i; while (j < rows.length && rows[j].t === rows[i].t) j++; for (let k = i + 1; k < j; k++) rows[k].t += (k - i) / (j - i); i = j; }
+  return { rows, meta: { distKm: num(d.distance), start: Number.isFinite(d.startTime) ? new Date(d.startTime * 1000) : null,
+    endT: Number.isFinite(d.endTime) && Number.isFinite(d.startTime) ? d.endTime - d.startTime : NaN } };
+}
+// files: [{ name, text }] — a ride's CSV, its JSON, or both (they describe the same samples, row for row).
+function parseFiles(files) {
+  let csv = null, json = null, name = '';
+  for (const f of files) {
+    const isJson = /\.json$/i.test(f.name) || /^\s*\{/.test(f.text);
+    if (isJson && !json) { let d; try { d = JSON.parse(f.text); } catch { throw new Error("Couldn't read that JSON file."); } json = jsonRows(d); name = name || f.name; }
+    else if (!isJson && !csv) { csv = csvRows(f.text); if (!json) name = f.name; }
+  }
+  if (!json && !csv) throw new Error('Choose a Nosedive CSV or JSON export.');
+  if (json && csv && csv.length === json.rows.length) {
+    // same samples: take sub-second timing and anything the JSON lacks (battery temp) from the CSV
+    json.rows.forEach((r, i) => { const c = csv[i]; if (Number.isFinite(c.t)) r.t = c.t; for (const k of ['tBatt', 'tBms', 'voltage', 'duty', 'ahc']) if (!(Number.isFinite(r[k]) && r[k] !== 0) && Number.isFinite(c[k])) r[k] = c[k]; });
+    if (Number.isFinite(json.meta.endT)) json.meta.endT += 1;
+  }
+  const ride = buildRide(json ? json.rows : csv, json ? json.meta : {}, json ? files.find(f => /json/i.test(f.name))?.name || name : name);
+  ride.sources = (json ? 'JSON' : '') + (json && csv ? ' + ' : '') + (csv ? 'CSV' : '');
+  return ride;
+}
+function buildRide(rows, meta, fileName) {
+  rows = rows.filter(r => Number.isFinite(r.t));
+  // Nosedive logs idle/charging rows before the ride with negative timestamps, and keeps logging after it ends.
+  if (rows.some(r => r.t >= 0)) rows = rows.filter(r => r.t >= 0);
+  if (Number.isFinite(meta.endT) && meta.endT > 0) rows = rows.filter(r => r.t <= meta.endT + 1);
+  for (const r of rows) r.speed = Math.abs(r.speed);
+  let lastMove = -1; rows.forEach((r, i) => { if (r.speed > 0.8) lastMove = i; });
+  if (lastMove > 0) { const tEnd = rows[lastMove].t + 5; rows = rows.filter(r => r.t <= tEnd); }
+  if (rows.length < 2) throw new Error('No ride samples found in that file.');
+  if (!rows.some(r => Number.isFinite(r.lat) && Number.isFinite(r.lon) && r.lat !== 0)) throw new Error('This ride has no GPS data, so there is no route to draw.');
   // Chart clock: Nosedive only logs a row now and then while the board sits idle, so any gap over 5 s
   // is collapsed — otherwise a board left on after the ride stretches the charts into long flat lines.
   rows[0].x = 0;
@@ -301,15 +340,17 @@ function parseRide(text, fileName) {
   let d = 0; sm[0].d = 0;
   for (let i = 1; i < sm.length; i++) { d += haversine(sm[i - 1], sm[i]); sm[i].d = d; }
 
-  let distKm = has.dist ? rows[rows.length - 1].dist - rows[0].dist : d / 1000;
+  // distance: Nosedive's own figure when the JSON gives one, else the board's trip counter, else GPS
+  let distKm = meta.distKm;
+  if (!(distKm > 0) && has.dist) { distKm = 0; for (let i = 1; i < rows.length; i++) { const dd = rows[i].dist - rows[i - 1].dist; if (dd > 0 && dd < 1) distKm += dd; } }
   if (!(distKm > 0)) distKm = d / 1000;
   let top = 0, topRow = rows[0];
   for (const r of rows) if (r.speed > top) { top = r.speed; topRow = r; }
 
   const m = /(\d{4})-(\d{2})-(\d{2})/.exec(fileName || '');
-  const date = m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+  const date = meta.start || (m ? new Date(+m[1], +m[2] - 1, +m[3]) : null);
   return {
-    fileName, rows, has, pts: sm, vLow, trackLen: d, date,
+    fileName, rows, has, pts: sm, vLow, trackLen: d, date, hasClock: !!meta.start,
     stats: { distKm, moving, elapsed: rows[rows.length - 1].t - rows[0].t, top, avg: moving > 0 ? distKm / (moving / 3600) : 0, wh, climb },
     topAt: { lat: topRow.lat, lon: topRow.lon },
   };
@@ -645,24 +686,30 @@ function syncUI() {
   $('privLabel').textContent = state.privacy ? `Hide first & last ${imp() ? Math.round(state.privacy * M_FT / 10) * 10 + ' ft' : state.privacy + ' m'} of route` : 'Hide start & end of route (off)';
 }
 
-function loadText(text, name) {
-  try { ride = parseRide(text, name); } catch (e) { toast(e.message); return false; }
+function loadFiles(files) {
+  try { ride = parseFiles(files); } catch (e) { toast(e.message); return false; }
   state.title = 'Onewheel ride';
-  state.subtitle = ride.date ? ride.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  state.subtitle = !ride.date ? '' : ride.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    + (ride.hasClock ? ' · ' + ride.date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '');
   state.battStart = state.battEnd = '';
   $('title').value = state.title; $('subtitle').value = state.subtitle; $('battStart').value = $('battEnd').value = ''; $('privacy').value = state.privacy;
-  $('fileName').textContent = name || 'ride.csv';
+  $('fileName').textContent = `${(ride.fileName || 'ride').replace(/\.(csv|json)$/i, '')} · ${ride.sources}`;
   $('drop').classList.add('hidden'); $('controls').classList.remove('hidden'); $('stage').classList.remove('empty');
   update(); return true;
 }
-window.__loadText = loadText;
-function readFile(f) { if (!f) return; const r = new FileReader(); r.onload = () => loadText(r.result, f.name); r.readAsText(f); }
+const loadText = (text, name) => loadFiles([{ name, text }]);
+window.__loadText = loadText; window.__loadFiles = loadFiles;
+async function readFiles(list) {
+  const files = [...(list || [])].filter(f => /\.(csv|json|txt)$/i.test(f.name) || /csv|json|text/.test(f.type));
+  if (!files.length) { if (list && list.length) toast('Choose a Nosedive CSV or JSON export.'); return; }
+  loadFiles(await Promise.all(files.map(async f => ({ name: f.name, text: await f.text() }))));
+}
 
 $('pick').onclick = $('drop').onclick = () => $('fileInput').click();
-$('fileInput').onchange = e => { readFile(e.target.files[0]); e.target.value = ''; };
+$('fileInput').onchange = async e => { await readFiles(e.target.files); e.target.value = ''; };
 addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('dragging'); });
 addEventListener('dragleave', () => document.body.classList.remove('dragging'));
-addEventListener('drop', e => { e.preventDefault(); document.body.classList.remove('dragging'); readFile(e.dataTransfer.files[0]); });
+addEventListener('drop', e => { e.preventDefault(); document.body.classList.remove('dragging'); readFiles(e.dataTransfer.files); });
 document.querySelectorAll('.seg button').forEach(b => b.onclick = () => { state[b.parentElement.dataset.key] = b.dataset.v; update(); });
 for (const id of ['title', 'subtitle', 'battStart', 'battEnd']) $(id).oninput = e => { state[id] = e.target.value; update(); };
 $('privacy').oninput = e => { state.privacy = +e.target.value; update(); };
